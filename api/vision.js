@@ -55,7 +55,7 @@ function clean(text) {
 // e약은요에서 제품명으로 검색
 async function searchDrugs(keyword) {
   const params = new URLSearchParams({
-    serviceKey: process.env.DATA_KEY,
+    serviceKey: (process.env.DATA_KEY || "").trim(),  // 환경 변수 끝에 줄바꿈이 붙어도 안전하게
     type: "json",
     pageNo: "1",
     numOfRows: "5",
