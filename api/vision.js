@@ -1,7 +1,6 @@
-// api/vision.js — 약 사진 분석 + e약은요 검색 + 추측글 (Vercel 서버리스 함수)
-const CLAUDE_URL = "https://api.anthropic.com/v1/messages";
+// api/vision.js — 약 사진 분석 + e약은요 검색 + 추측글 (Vercel 서버리스 함수, 제미니 사용)
+const { askGemini, hasKeys } = require("./_gemini");
 const DRUG_URL = "http://apis.data.go.kr/1471000/DrbEasyDrugInfoService/getDrbEasyDrugList";
-const MODEL = "claude-haiku-5-5";
 
 // 1단계: 사진 읽기용 지시문 (짧게 쓰도록 제한)
 const VISION_PROMPT =
@@ -22,33 +21,6 @@ const GUESS_PROMPT =
   "검색 결과가 없으면 사진만으로는 제품을 특정하기 어렵다고 말하고 보이는 특징만 설명해. " +
   "복용 권유, 복용량, 진단 같은 의학적 조언은 절대 하지 마. " +
   "마지막에 '사진만으로는 정확한 확인이 어려우니 실제 복용 판단은 약사와 상담하세요.'를 붙여.";
-
-// Claude에게 요청하고 글(text)만 돌려받기
-async function askClaude(system, content, maxTokens) {
-  const response = await fetch(CLAUDE_URL, {
-    method: "POST",
-    headers: {
-      "x-api-key": process.env.ANTHROPIC_API_KEY,
-      "anthropic-version": "2023-06-01",
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: maxTokens,
-      system: system,
-      messages: [{ role: "user", content: content }],
-    }),
-  });
-  const result = await response.json();
-  if (!response.ok) {
-    throw new Error("AI 요청 실패: " + (result.error?.message || response.status));
-  }
-  return (result.content || [])
-    .filter(block => block.type === "text")
-    .map(block => block.text)
-    .join("\n")
-    .trim();
-}
 
 // AI 답변에서 JSON 꺼내기 (실패해도 멈추지 않음)
 function parseAnalysis(text) {
@@ -119,8 +91,12 @@ module.exports = async (req, res) => {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "POST 요청만 받아요." });
   }
-  if (!process.env.ANTHROPIC_API_KEY || !process.env.DATA_KEY) {
-    return res.status(500).json({ error: "ANTHROPIC_API_KEY 또는 DATA_KEY 환경 변수가 없어요. 설정 후 Redeploy 하세요." });
+  const origin = req.headers.origin;
+  if (origin && (() => { try { return new URL(origin).host !== req.headers.host; } catch { return true; } })()) {
+    return res.status(403).json({ error: "이 사이트에서 보낸 사진만 받아요." });
+  }
+  if (!hasKeys() || !process.env.DATA_KEY) {
+    return res.status(500).json({ error: "GEMINI_API_KEYS 또는 DATA_KEY 환경 변수가 없어요. 설정 후 Redeploy 하세요." });
   }
 
   const { image, mediaType } = req.body || {};
@@ -135,14 +111,10 @@ module.exports = async (req, res) => {
 
   try {
     // ---------- 1단계: 사진 분석 ----------
-    const analysisText = await askClaude(
-      VISION_PROMPT,
-      [
-        { type: "image", source: { type: "base64", media_type: type, data: image } },
-        { type: "text", text: "이 사진을 분석해서 JSON 한 개만 출력해." },
-      ],
-      1500
-    );
+    const analysisText = await askGemini(VISION_PROMPT, [
+      { inlineData: { mimeType: type, data: image } },
+      { text: "이 사진을 분석해서 JSON 한 개만 출력해." },
+    ]);
     const analysis = parseAnalysis(analysisText);
 
     if (analysis.is_medicine === false) {
@@ -167,15 +139,14 @@ module.exports = async (req, res) => {
     const drugs = [...found.values()].slice(0, 5);
 
     // ---------- 3단계: 추측글 ----------
-    const guess = await askClaude(
-      GUESS_PROMPT,
-      "[사진 분석]\n" + JSON.stringify(analysis) +
+    const guess = await askGemini(GUESS_PROMPT, [{
+      text:
+        "[사진 분석]\n" + JSON.stringify(analysis) +
         "\n\n[e약은요 검색 결과]\n" +
         (drugs.length
           ? JSON.stringify(drugs.map(d => ({ name: d.name, company: d.company, effect: d.effect.slice(0, 150) })))
           : "검색 결과 없음 (사진에서 제품명을 읽지 못함)"),
-      1000
-    );
+    }]);
 
     return res.status(200).json({ analysis, drugs, guess });
   } catch (err) {

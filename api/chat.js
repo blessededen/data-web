@@ -1,4 +1,12 @@
-// api/chat.js — AI 챗봇 서버 (Vercel 서버리스 함수, API 키는 여기서만 사용)
+// api/chat.js — AI 챗봇 서버 (Vercel 서버리스 함수, 제미니 API 키는 서버에서만 사용)
+const { askGemini, hasKeys } = require("./_gemini");
+
+// 다른 사이트에서 이 주소로 질문을 보내 키를 공짜로 쓰는 걸 막기
+function sameSite(req) {
+  const origin = req.headers.origin;
+  if (!origin) return true; // 주소창에서 직접 여는 경우 등
+  try { return new URL(origin).host === req.headers.host; } catch { return false; }
+}
 
 // 페이지별 AI 지시문 (mode 값으로 골라 씀)
 const PROMPTS = {
@@ -22,8 +30,11 @@ module.exports = async (req, res) => {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "POST 요청만 받아요." });
   }
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return res.status(500).json({ error: "ANTHROPIC_API_KEY 환경 변수가 없어요. Vercel 설정 후 Redeploy 하세요." });
+  if (!sameSite(req)) {
+    return res.status(403).json({ error: "이 사이트에서 보낸 질문만 받아요." });
+  }
+  if (!hasKeys()) {
+    return res.status(500).json({ error: "GEMINI_API_KEYS 환경 변수가 없어요. Vercel 설정 후 Redeploy 하세요." });
   }
 
   const { mode, question, data } = req.body || {};
@@ -36,40 +47,10 @@ module.exports = async (req, res) => {
   const context = JSON.stringify(data || {}).slice(0, 6000);    // 데이터 길이 제한
 
   try {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "x-api-key": process.env.ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "claude-haiku-5-5",
-        max_tokens: 1000,
-        system: system,
-        messages: [{ role: "user", content: `[데이터]\n${context}\n\n[질문]\n${q}` }],
-      }),
-    });
-
-    const result = await response.json();
-    if (!response.ok) {
-      return res.status(500).json({
-        error: "AI 요청 실패: " + (result.error?.message || JSON.stringify(result).slice(0, 300)),
-      });
-    }
-
-    // 응답에서 글(text) 부분만 모으기
-    const text = (result.content || [])
-      .filter(block => block.type === "text")
-      .map(block => block.text)
-      .join("\n")
-      .trim();
-
-    if (!text) {
-      return res.status(500).json({ error: "AI 답변이 비어 있어요: " + JSON.stringify(result).slice(0, 300) });
-    }
+    // 제미니에게 질문 (키 돌려쓰기는 _gemini.js가 알아서)
+    const text = await askGemini(system, [{ text: `[데이터]\n${context}\n\n[질문]\n${q}` }]);
     return res.status(200).json({ answer: text });
   } catch (err) {
-    return res.status(500).json({ error: "서버 오류: " + err.message });
+    return res.status(500).json({ error: err.message });
   }
 };
