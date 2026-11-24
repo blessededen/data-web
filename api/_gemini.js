@@ -8,18 +8,27 @@ const MODEL = process.env.GEMINI_MODEL || "gemini-3-flash-preview";
 const FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || "gemini-flash-latest";
 const API = "https://generativelanguage.googleapis.com/v1beta/models";
 
+// 제미니 키 모양(AIza + 35글자)인 것만 쓴다. 잘린 키나 끝에 붙은 깨진 글자는 걸러낸다.
 const keys = () =>
-  (process.env.GEMINI_API_KEYS || process.env.GEMINI_API_KEY || "").split(/[\s,]+/).filter(Boolean);
+  (process.env.GEMINI_API_KEYS || process.env.GEMINI_API_KEY || "")
+    .split(/[\s,]+/)
+    .map(t => (t.match(/^(AIza[0-9A-Za-z_-]{35})[^0-9A-Za-z_-]*$/) || [])[1])
+    .filter(Boolean);
 
 async function callGemini(key, model, body, signal) {
-  const r = await fetch(`${API}/${model}:generateContent`, {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-goog-api-key": key },
-    body: JSON.stringify(body),
-    signal,
-  });
-  const j = await r.json().catch(() => ({}));
-  return { status: r.status, j };
+  try {
+    const r = await fetch(`${API}/${model}:generateContent`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-goog-api-key": key },
+      body: JSON.stringify(body),
+      signal,
+    });
+    const j = await r.json().catch(() => ({}));
+    return { status: r.status, j };
+  } catch (e) {
+    if (e.name === "AbortError") throw e; // 시간 초과는 전체 중단
+    return { status: 0, j: { error: { message: e.message } } }; // 키 하나 문제면 다음 키로
+  }
 }
 
 // system: 지시문, parts: [{ text }] 또는 [{ inlineData: { mimeType, data } }, { text }]
@@ -42,6 +51,8 @@ async function askGemini(system, parts, maxTokens = 4096) {
     attempts.push({ key: ks[(start + i) % ks.length], model: MODEL, thinking: true });
   }
   attempts.push({ key: ks[(start + 4) % ks.length], model: FALLBACK_MODEL, thinking: false });
+  attempts.push({ key: ks[(start + 5) % ks.length], model: FALLBACK_MODEL, thinking: false });
+  const busy = new Set(); // 503(모델 혼잡)이 난 모델은 키를 바꿔도 소용없으니 건너뛴다
 
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 45e3);
@@ -49,12 +60,14 @@ async function askGemini(system, parts, maxTokens = 4096) {
   let lastMessage = "";
   try {
     for (const a of attempts) {
+      if (busy.has(a.model)) continue;
       // 생각(thinking)은 짧게: 답이 빨리 오고, 출력 한도를 생각에 다 쓰지 않게
       const gen = { ...base.generationConfig, ...(a.thinking ? { thinkingConfig: { thinkingLevel: "low" } } : {}) };
       let { status, j } = await callGemini(a.key, a.model, { ...base, generationConfig: gen }, ctrl.signal);
       if (status === 400 && a.thinking) ({ status, j } = await callGemini(a.key, a.model, base, ctrl.signal));
       lastStatus = status;
       lastMessage = j.error?.message || "";
+      if (status === 503) busy.add(a.model);
       if (status !== 200) continue; // 한도 초과(429)·키 문제면 다음 키로
 
       const text = (j.candidates?.[0]?.content?.parts || [])
@@ -70,7 +83,7 @@ async function askGemini(system, parts, maxTokens = 4096) {
     clearTimeout(timer);
   }
   throw new Error(
-    lastStatus === 429
+    lastStatus === 429 || lastStatus === 503
       ? "AI 사용량 초과 · 잠시 후 다시 시도해 주세요."
       : `AI 요청 실패 (${lastStatus}) ${lastMessage.slice(0, 120)}`
   );
