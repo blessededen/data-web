@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>나만의 데이터</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body { font-family: sans-serif; max-width: 900px; margin: 40px auto; padding: 0 20px; background: #f7f5fb; }
+    .card { background: white; border-radius: 12px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+    input { padding: 10px; font-size: 15px; border: 1px solid #ccc; border-radius: 8px; box-sizing: border-box; }
+    .chat-input { display: flex; gap: 8px; margin-top: 10px; }
+    .chat-input input { flex: 1; }
+    button { padding: 8px 14px; border: 1px solid #ddd; border-radius: 16px; background: #f3f4f6; cursor: pointer; margin: 4px 4px 0 0; }
+    #answer { margin-top: 12px; white-space: pre-wrap; line-height: 1.6; }
+    .source { color: #888; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <p><a href="index.html">← 홈으로</a></p>
+  <h1 id="title">⭐ 나만의 데이터</h1>
+  <p id="description"></p>
+  <p class="source" id="source"></p>
+
+  <div class="card">
+    <div>
+      그래프 모양:
+      <button onclick="draw('bar')">막대</button>
+      <button onclick="draw('line')">꺾은선</button>
+      <button onclick="draw('pie')">원</button>
+    </div>
+    <canvas id="myChart"></canvas>
+  </div>
+
+  <div class="card">
+    <h2>🤖 AI에게 물어보기</h2>
+    <div class="chat-input">
+      <input id="question" placeholder="내 데이터에 대해 궁금한 점을 물어보세요">
+      <button id="askBtn">질문</button>
+    </div>
+    <div id="answer"></div>
+  </div>
+
+  <div class="card">
+    <h2>📝 나의 분석 한 줄</h2>
+    <p>11월에 가장 많이 들은 과목은 독서와 작문(16시간)이고, 미적분Ⅰ·윤리와 사상이 15시간으로 뒤를 잇는다.
+       시간표에는 토요휴업일·재량휴업도 과목처럼 들어 있어서 빼고 세야 실제 수업 시간이 나왔다.</p>
+  </div>
+
+  <script>
+    const MODE = "custom";
+    let myData = null;
+    let chart = null;
+
+    // 그래프 그리기 (모양을 바꿀 수 있게 함수로 만듦)
+    function draw(type) {
+      if (!myData) return;
+      if (chart) chart.destroy();   // 이전 그래프 지우기
+      chart = new Chart(document.getElementById("myChart"), {
+        type: type,
+        data: {
+          labels: myData.labels,
+          datasets: [{ label: myData.title, data: myData.values }]
+        }
+      });
+    }
+
+    fetch("my.json")
+      .then(res => res.json())
+      .then(data => {
+        myData = data;
+        document.getElementById("title").textContent = "⭐ " + data.title;
+        document.getElementById("description").textContent = data.description || "";
+        document.getElementById("source").textContent = data.source || "";
+        draw("bar");
+      })
+      .catch(() => {
+        document.getElementById("description").textContent = "아직 my.json이 없어요. my.py를 실행해서 만들어주세요.";
+      });
+
+    // AI 챗봇 (Vercel에서만 작동)
+    async function ask(question) {
+      const box = document.getElementById("answer");
+      box.textContent = "🤖 생각 중...";
+      try {
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode: MODE, question: question, data: myData })
+        });
+        const result = await res.json();
+        box.textContent = result.answer || ("⚠️ " + (result.error || JSON.stringify(result)));
+      } catch (e) {
+        box.textContent = "⚠️ 연결 실패: Vercel 주소(.vercel.app)에서 열었는지 확인하세요. (" + e.message + ")";
+      }
+    }
+
+    document.getElementById("askBtn").onclick = () => {
+      const q = document.getElementById("question").value.trim();
+      if (q) ask(q);
+    };
+    document.getElementById("question").addEventListener("keydown", e => {
+      if (e.key === "Enter") document.getElementById("askBtn").click();
+    });
+  </script>
+</body>
+</html>
